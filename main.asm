@@ -1,4 +1,4 @@
-; KART NO: 34A
+ ; KART NO: 34A
 ;-------------------------------------------------------------------------------
 ; MSP430 Assembler Code Template for use with TI Code Composer Studio
 ;
@@ -46,11 +46,19 @@ StopWDT     mov.w   #WDTPW|WDTHOLD,&WDTCTL  ; Stop watchdog timer
 	mov.w #0, R7					; Level Index
 	mov.b #0, R8					; Pattern Index
 	mov.b #0, R9					; Input Index
+	mov.w #TASSEL_2 | MC_2 | TACLR, &TA0CTL
 
 .data
-first_level: 	.byte #BIT1, #BIT2, #BIT1, #BIT4, #BIT2 
+first_level: 	.byte #BIT1, #BIT2, #BIT1, #BIT4, #BIT2 ; you used bit3 but bit3 is the start button :( 
 second_level: 	.byte #BIT2, #BIT2, #BIT1, #BIT4, #BIT3, #BIT4
 third_level: 	.byte #BIT1, #BIT2, #BIT3, #BIT4, #BIT1, #BIT3, #BIT2, #BIT4
+
+.bss
+rand_lvl1:   .space 5
+rand_lvl2:   .space 6
+rand_lvl3:   .space 8
+seed8:       .space 1
+
 
 Idle_State:
 	bit.b   #00001000b, &P1IN       ; read switch at P1.3
@@ -77,25 +85,49 @@ Start_State:
 
 Game_State:
 	call 	#Reset_State
-	mov.w 	#1, R7					; set current level to "initiliazed"
+	mov.w   &TA0R, R12
+    mov.b   R12, &seed8 
+	mov.w 	#1, R7					; set lvl to initiliazed
 	jmp 	Show_Pattern
 
 Show_Pattern:
-	mov.b	#0, R8					; reset patter index for upcoming level
-	cmp.b	#1, R7
-	jeq 	First_Level
-	cmp.b	#2, R7
-	jeq 	Second_Level
-	cmp.b	#3, R7
-	jeq 	Third_Level
-	jmp		Idle_State
+    mov.b   #0, R8              ; pattern index
+    mov.b   #0, R9              ; input index 
+
+    cmp.b   #1, R7
+    jeq     Gen_L1
+    cmp.b   #2, R7
+    jeq     Gen_L2
+    cmp.b   #3, R7
+    jeq     Gen_L3
+    jmp     Idle_State
+; these generate random levels
+Gen_L1:
+    mov.w   #rand_lvl1, R10
+    mov.w   #5, R11
+    call    #FillPatternRandom
+    jmp     First_Level
+
+Gen_L2:
+    mov.w   #rand_lvl2, R10
+    mov.w   #6, R11
+    call    #FillPatternRandom
+    jmp     Second_Level
+
+Gen_L3:
+    mov.w   #rand_lvl3, R10
+    mov.w   #8, R11
+    call    #FillPatternRandom
+    jmp     Third_Level
+
+; the levels arent correct rn because the leds and buttons aren't mapped correctly, will fix (buttons use bit1 2 4 5 leds use 0 2 4 6)
 
 First_Level:
-	bis.b	first_level(R8), &P2OUT	; set corresponding led on
+	bis.b	rand_lvl1(R8), &P2OUT	
 	call	#blink
 	call	#blink
 	call	#blink
-	bic.b	first_level(R8), &P2OUT	; set corresponding led off
+	bic.b	rand_lvl1(R8), &P2OUT	
 	call	#blink
 	call	#blink
 	call	#blink
@@ -106,23 +138,22 @@ First_Level:
 	jmp 	Wait_State
 
 Second_Level:
-	bis.b	second_level(R8), &P2OUT	; set corresponding led on
+	bis.b	rand_lvl2(R8), &P2OUT	
 	call	#blink
 	call	#blink
-	bic.b	second_level(R8), &P2OUT	; set corresponding led off
+	bic.b	rand_lvl2(R8), &P2OUT	
 	call	#blink
 	call	#blink
 	inc.b	R8
 	cmp.b	#6,	R8
 	jl		Second_Level
 	mov.b	#0, R8
-	mov.b
 	jmp 	Wait_State
 
 Third_Level:
-	bis.b	third_level(R8), &P2OUT	; set corresponding led on
+	bis.b	rand_lvl3(R8), &P2OUT	
 	call	#blink
-	bic.b	third_level(R8), &P2OUT	; set corresponding led off
+	bic.b	rand_lvl3(R8), &P2OUT	
 	call	#blink
 	inc.b	R8
 	cmp.b	#8,	R8
@@ -197,6 +228,50 @@ blink: ; blink 0.5 seconds
 	mov.w #0, R5
 	ret
 
+; returns one of BIT1, BIT2, BIT4, BIT5 in R12 
+RandBit:
+    mov.w   &TA0R, R12          ; sample timer 
+    xor.b   &seed8, R12         ; mix with seed
+
+    rla.b   R12
+    xor.b   &seed8, R12
+    rrc.b   R12
+    mov.b   R12, &seed8         ; update seed
+
+    ; map to 0..3
+    and.b   #00000011b, R12
+
+    ; map 0..3 to BIT1, BIT2, BIT4, BIT5
+    cmp.b   #0, R12
+    jeq     RB_0
+    cmp.b   #1, R12
+    jeq     RB_1
+    cmp.b   #2, R12
+    jeq     RB_2
+    ; else 3
+    mov.b   #BIT5, R12
+    ret
+RB_0: 
+	mov.b  #BIT1, R12
+    ret
+RB_1:
+	mov.b  #BIT2, R12
+    ret
+RB_2: 
+	mov.b  #BIT4, R12
+    ret
+
+FillPatternRandom:
+FPR_loop:
+    call    #RandBit
+    mov.b   R12, 0(R10)     ; store random bit
+    inc.w   R10             ; next array element
+    dec.w   R11             ; decrement length
+    cmp.w   #0, R11
+    jne     FPR_loop
+    ret
+
+
 Input_State:
 	cmp.b	#1, R7
 	jeq 	Check_FL
@@ -209,7 +284,7 @@ Input_State:
 Check_FL:
 	cmp.b	#5, R9
 	jge		Win_State
-	cmp.b	first_level(R9), &P1IFG ; check input
+	cmp.b	rand_lvl1(R9), &P1IFG ; check input
 	jeq		Progress
 	bic.b	#00110110b, &P1IFG	; clear Interrupt Flag
 	jmp		Lose_State
@@ -217,7 +292,7 @@ Check_FL:
 Check_SL:
 	cmp.b	#6, R9
 	jge		Win_State
-	cmp.b	second_level(R9), &P1IFG ; check input
+	cmp.b	rand_lvl2(R9), &P1IFG ; check input
 	jeq		Progress
 	bic.b	#00110110b, &P1IFG	; clear Interrupt Flag
 	jmp		Lose_State
@@ -225,13 +300,13 @@ Check_SL:
 Check_TL:
 	cmp.b	#8, R9
 	jge		Win_State
-	cmp.b	third_level(R9), &P1IFG ; check input
+	cmp.b	rand_lvl3(R9), &P1IFG ; check input
 	jeq		Progress
 	bic.b	#00110110b, &P1IFG	; clear Interrupt Flag
 	jmp		Lose_State
 
 Progress:
-	inc.b	#R9
+	inc.b	R9
 	bic.b	#00110110b, &P1IFG	; clear Interrupt Flag
 	cmp.b	#1, R7
 	jeq 	Check_FL
