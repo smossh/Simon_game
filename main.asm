@@ -1,4 +1,4 @@
- ; KART NO: 34A
+; KART NO: 34A
 ;-------------------------------------------------------------------------------
 ; MSP430 Assembler Code Template for use with TI Code Composer Studio
 ;
@@ -46,7 +46,12 @@ StopWDT     mov.w   #WDTPW|WDTHOLD,&WDTCTL  ; Stop watchdog timer
 	mov.w #0, R7					; Level Index
 	mov.b #0, R8					; Pattern Index
 	mov.b #0, R9					; Input Index
-	mov.w #TASSEL_2 | MC_2 | TACLR, &TA0CTL
+
+
+; SMCLK >> 1MHz, /8 >> 125kHz, 1ms >> 125 cycles>> CCR0=124
+	mov.w   #TASSEL_2 | ID_3 | MC_1 | TACLR, &TA0CTL
+	mov.w   #124, &TA0CCR0
+	bis.w   #CCIE, &TA0CCTL0
 
 .data
 first_level: 	.byte #BIT1, #BIT2, #BIT1, #BIT4, #BIT2 ; you used bit3 but bit3 is the start button :( 
@@ -58,6 +63,10 @@ rand_lvl1:   .space 5
 rand_lvl2:   .space 6
 rand_lvl3:   .space 8
 seed8:       .space 1
+
+ms_cnt:    .space 2      ; time ms counter
+button_db:     .space 1      ; debounced button(1-2-4-5)
+
 
 
 Idle_State:
@@ -204,29 +213,32 @@ Reset_State:
 	bic.b   #01000001b, &P1OUT    	; reset P1OUT outputs
 	bic.b   #11010101b, &P2OUT    	; reset P2OUT outputs
 	mov.w 	#0, R6					; reset start condition
+    mov.w   #0, &ms_cnt          ; reset tick counter (optional clean start)
+    mov.b   #0, &button_db           ; clear last button event
 	ret
 
-delay: ; 2 seconds delay	
-	inc.w R4
-	cmp.w #11111111b, R4
-	jl delay
-	mov.w #0, R4
-	inc.w R5
-	cmp.w #1750, R5
-	jl delay
-	mov.w #0, R5
+
+delay_ms: ;r12=ms
+    push    r13
+    mov.w   &ms_cnt, r13
+dms_loop:
+    mov.w   &ms_cnt, r14
+    sub.w   r13, r14           ; gecen sure
+    cmp.w   r12, r14
+    jl      dms_loop
+    pop     r13
+    ret
+
+delay: ; 2sec delay	
+	mov.w   #2000, r12
+	call    #delay_ms
 	ret
 
 blink: ; blink 0.5 seconds
-	inc.w R4
-	cmp.w #00111111b, R4
-	jl blink
-	mov.w #0, R4
-	inc.w R5
-	cmp.w #1750, R5
-	jl blink
-	mov.w #0, R5
+	mov.w   #500, r12
+	call    #delay_ms
 	ret
+
 
 ; returns one of BIT1, BIT2, BIT4, BIT5 in R12 
 RandBit:
@@ -272,7 +284,53 @@ FPR_loop:
     ret
 
 
+; TimerA0 CCR0 ISR
+TA0_ISR:
+    inc.w   &ms_cnt
+    bic.w   #CCIFG, &TA0CCTL0
+    reti
+
+
 Input_State:
+    ; clear IFG
+    mov.b   &P1IFG, r14
+    and.b   #00110110b, r14        ; BIT1,BIT2,BIT4,BIT5
+    bic.b   #00110110b, &P1IFG     ; clear flags
+
+    ; debounce>>20ms
+    mov.w   #20, r12
+    call    #delay_ms
+
+    ;check BIT1 still pressed?
+    bit.b   #BIT1, r14
+    jz      check_b2
+    bit.b   #BIT1, &P1IN ;0>>pressed
+    jnz     b_none		 ;1>>bounce
+    jmp     db_ok
+
+check_b2:
+    bit.b   #BIT2, r14
+    jz      check_b4
+    bit.b   #BIT2, &P1IN
+    jnz     b_none
+    jmp     db_ok
+
+check_b4:
+    bit.b   #BIT4, r14
+    jz      check_b5
+    bit.b   #BIT4, &P1IN
+    jnz     b_none
+    jmp     db_ok
+
+check_b5:
+    bit.b   #BIT5, r14
+    jz      b_none
+    bit.b   #BIT5, &P1IN
+    jnz     b_none
+
+db_ok:
+    mov.b   r14, &button_db
+
 	cmp.b	#1, R7
 	jeq 	Check_FL
 	cmp.b	#2, R7
@@ -281,33 +339,36 @@ Input_State:
 	jeq 	Check_TL
 	reti
 
+b_none:
+    mov.b   #0, &button_db
+    reti
+
+
 Check_FL:
 	cmp.b	#5, R9
 	jge		Win_State
-	cmp.b	rand_lvl1(R9), &P1IFG ; check input
+	cmp.b	rand_lvl1(R9), &button_db ; check input>>debounced (&P1IFG>>&btn_cnt)
 	jeq		Progress
-	bic.b	#00110110b, &P1IFG	; clear Interrupt Flag
 	jmp		Lose_State
 
 Check_SL:
 	cmp.b	#6, R9
 	jge		Win_State
-	cmp.b	rand_lvl2(R9), &P1IFG ; check input
+	cmp.b	rand_lvl2(R9), &button_db ; check input>>debounced
 	jeq		Progress
-	bic.b	#00110110b, &P1IFG	; clear Interrupt Flag
 	jmp		Lose_State
 
 Check_TL:
 	cmp.b	#8, R9
 	jge		Win_State
-	cmp.b	rand_lvl3(R9), &P1IFG ; check input
+	cmp.b	rand_lvl3(R9), &button_db ; check input<<debounced
 	jeq		Progress
-	bic.b	#00110110b, &P1IFG	; clear Interrupt Flag
 	jmp		Lose_State
 
 Progress:
 	inc.b	R9
-	bic.b	#00110110b, &P1IFG	; clear Interrupt Flag
+    mov.b   #0, &button_db
+
 	cmp.b	#1, R7
 	jeq 	Check_FL
 	cmp.b	#2, R7
@@ -327,5 +388,9 @@ Progress:
 ;-------------------------------------------------------------------------------
 			.sect ".int02" 					; Port 1 interrupt vector
 			.short Input_State
+
+            .sect ".int09"                  ; TimerA CCR0 interrupt vector
+            .short TA0_ISR
+
             .sect   ".reset"                ; MSP430 RESET Vector
             .short  RESET
